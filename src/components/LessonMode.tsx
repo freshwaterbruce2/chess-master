@@ -19,6 +19,7 @@ export function LessonMode({ pieceSet }: { pieceSet: string }) {
   const [errorMsg, setErrorMsg] = useState("");
   const [moveFrom, setMoveFrom] = useState<string | null>(null);
   const [optionSquares, setOptionSquares] = useState<Record<string, React.CSSProperties>>({});
+  const [promotionMove, setPromotionMove] = useState<{from: string, to: string} | null>(null);
 
   const lesson = LESSONS[currentLessonIndex];
   
@@ -113,15 +114,39 @@ export function LessonMode({ pieceSet }: { pieceSet: string }) {
     }
   }
 
-  function onDrop(sourceSquare: string, targetSquare: string) {
+  function onDrop(sourceSquare: string, targetSquare: string, piece: string) {
     setMoveFrom(null);
     setOptionSquares({});
+
+    const isPromotion = 
+      (piece && piece[1] === 'P' && sourceSquare[1] === '7' && targetSquare[1] === '8') ||
+      (piece && piece[1] === 'P' && sourceSquare[1] === '2' && targetSquare[1] === '1');
+
+    if (isPromotion) {
+      setPromotionMove({ from: sourceSquare, to: targetSquare });
+      return true; 
+    }
+
     const move = makeMove({
       from: sourceSquare,
       to: targetSquare,
       promotion: 'q', // always promote to a queen for simplicity
     });
     return move;
+  }
+
+  function onPromotionPieceSelect(pieceType: string | undefined) {
+    if (pieceType && promotionMove) {
+      makeMove({
+        from: promotionMove.from,
+        to: promotionMove.to,
+        promotion: pieceType[1].toLowerCase() ?? 'q'
+      });
+    }
+    setPromotionMove(null);
+    setMoveFrom(null);
+    setOptionSquares({});
+    return true;
   }
 
   function nextLesson() {
@@ -138,15 +163,25 @@ export function LessonMode({ pieceSet }: { pieceSet: string }) {
     setErrorMsg("");
     setMoveFrom(null);
     setOptionSquares({});
+    setPromotionMove(null);
   }
 
   return (
     <div className="max-w-6xl mx-auto p-8 flex flex-col lg:flex-row gap-12 animate-in fade-in slide-in-from-bottom-4 duration-500 relative z-30">
-      <div className="flex-1 max-w-[600px] backdrop-blur-md bg-white/5 p-6 rounded-3xl border border-white/10 shadow-2xl">
-        <Chessboard 
+      <div className="flex-1 max-w-[600px] flex flex-col gap-6">
+        <div className="flex justify-between items-center px-4 py-2 bg-white/5 border border-white/10 rounded-xl backdrop-blur-md">
+           <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Active Piece Set:</span>
+           <span className="text-xs font-bold text-indigo-400 bg-indigo-500/20 px-3 py-1 rounded-lg uppercase tracking-wider">{pieceSet}</span>
+        </div>
+        <div className="backdrop-blur-md bg-white/5 p-6 rounded-3xl border border-white/10 shadow-2xl">
+          <Chessboard 
+            key={pieceSet}
           position={fen} 
           onPieceDrop={onDrop}
           onSquareClick={onSquareClick}
+          promotionToSquare={promotionMove?.to ?? null}
+          showPromotionDialog={!!promotionMove}
+          onPromotionPieceSelect={onPromotionPieceSelect}
           onPieceDragBegin={(_, sourceSquare) => {
             getMoveOptions(sourceSquare);
             setMoveFrom(sourceSquare);
@@ -159,6 +194,7 @@ export function LessonMode({ pieceSet }: { pieceSet: string }) {
           customDropSquareStyle={customDropSquareStyle}
           customPieces={customPieces}
         />
+        </div>
         
         <div className="mt-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 py-4 px-6 rounded-2xl bg-white/5 border border-white/10">
           <div className="flex items-center gap-4 w-full sm:w-auto overflow-hidden">
@@ -182,6 +218,19 @@ export function LessonMode({ pieceSet }: { pieceSet: string }) {
       </div>
       
       <div className="flex-1 flex flex-col justify-center">
+        <div className="mb-6">
+          <div className="flex justify-between text-xs mb-2 text-slate-400 font-bold uppercase tracking-widest">
+            <span>Lesson Progress</span>
+            <span>{Math.round(((currentLessonIndex + 1) / LESSONS.length) * 100)}%</span>
+          </div>
+          <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden border border-white/5">
+            <div 
+              className="h-full bg-indigo-500 transition-all duration-500 ease-out" 
+              style={{ width: `${((currentLessonIndex + 1) / LESSONS.length) * 100}%` }}
+            ></div>
+          </div>
+        </div>
+
         <div className="inline-flex items-center text-xs font-bold text-indigo-400 uppercase tracking-widest mb-4 bg-indigo-500/20 px-3 py-1.5 rounded-full w-max border border-indigo-500/20">
           Lesson {currentLessonIndex + 1} of {LESSONS.length}
         </div>

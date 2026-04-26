@@ -22,11 +22,12 @@ export function AITutorMode({ pieceSet }: { pieceSet: string }) {
   const [fen, setFen] = useState(game.fen());
   const [chat, setChat] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
+  const [isTyping, setIsTyping] = useState<string | boolean>(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
 
   const [moveFrom, setMoveFrom] = useState<string | null>(null);
   const [optionSquares, setOptionSquares] = useState<Record<string, React.CSSProperties>>({});
+  const [promotionMove, setPromotionMove] = useState<{from: string, to: string} | null>(null);
 
   const customPieces = useMemo(() => piecesConfig(pieceSet), [pieceSet]);
 
@@ -89,9 +90,20 @@ export function AITutorMode({ pieceSet }: { pieceSet: string }) {
     }
   }
 
-  function onDrop(sourceSquare: string, targetSquare: string) {
+  function onDrop(sourceSquare: string, targetSquare: string, piece: string) {
+    if (isTyping) return false;
     setMoveFrom(null);
     setOptionSquares({});
+
+    const isPromotion = 
+      (piece && piece[1] === 'P' && sourceSquare[1] === '7' && targetSquare[1] === '8') ||
+      (piece && piece[1] === 'P' && sourceSquare[1] === '2' && targetSquare[1] === '1');
+
+    if (isPromotion) {
+      setPromotionMove({ from: sourceSquare, to: targetSquare });
+      return true; 
+    }
+
     try {
       const move = game.move({
         from: sourceSquare,
@@ -109,6 +121,27 @@ export function AITutorMode({ pieceSet }: { pieceSet: string }) {
     }
   }
 
+  function onPromotionPieceSelect(pieceType: string | undefined) {
+    if (pieceType && promotionMove) {
+      try {
+        const move = game.move({
+          from: promotionMove.from,
+          to: promotionMove.to,
+          promotion: pieceType[1].toLowerCase() ?? 'q'
+        });
+        if (move !== null) {
+          setFen(game.fen());
+        }
+      } catch (e) {
+        // illegal move
+      }
+    }
+    setPromotionMove(null);
+    setMoveFrom(null);
+    setOptionSquares({});
+    return true;
+  }
+
   function resetBoard() {
     const newGame = new Chess();
     setGame(newGame);
@@ -116,6 +149,21 @@ export function AITutorMode({ pieceSet }: { pieceSet: string }) {
     setChat([]);
     setMoveFrom(null);
     setOptionSquares({});
+    setPromotionMove(null);
+  }
+
+  function handleFenChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const newFen = e.target.value;
+    setFen(newFen);
+    try {
+      const newGame = new Chess(newFen);
+      setGame(newGame);
+      setMoveFrom(null);
+      setOptionSquares({});
+      setPromotionMove(null);
+    } catch (err) {
+      // Invalid FEN string during typing is ignored for the game state
+    }
   }
 
   async function handleSend() {
@@ -124,12 +172,16 @@ export function AITutorMode({ pieceSet }: { pieceSet: string }) {
     const userMessage = input.trim();
     setInput("");
     setChat(prev => [...prev, { role: 'user', content: userMessage }]);
-    setIsTyping(true);
+    setIsTyping("Thinking...");
 
-    const advice = await getChessAdvice(fen, userMessage);
-    
-    setChat(prev => [...prev, { role: 'tutor', content: advice }]);
-    setIsTyping(false);
+    try {
+      const advice = await getChessAdvice(fen, userMessage);
+      setChat(prev => [...prev, { role: 'tutor', content: advice }]);
+    } catch (e) {
+      setChat(prev => [...prev, { role: 'tutor', content: 'Oops! I encountered an error. Please try again.' }]);
+    } finally {
+      setIsTyping(false);
+    }
   }
 
   async function handleQuickAction(action: 'evaluate' | 'suggest') {
@@ -143,23 +195,35 @@ export function AITutorMode({ pieceSet }: { pieceSet: string }) {
     
     // We can simulate an instant send rather than just populating input
     setChat(prev => [...prev, { role: 'user', content: question }]);
-    setIsTyping(true);
+    setIsTyping(action === 'evaluate' ? "Evaluating position..." : "Calculating best lines...");
     
-    const advice = await getChessAdvice(fen, question);
-    
-    setChat(prev => [...prev, { role: 'tutor', content: advice }]);
-    setIsTyping(false);
+    try {
+      const advice = await getChessAdvice(fen, question);
+      setChat(prev => [...prev, { role: 'tutor', content: advice }]);
+    } catch (e) {
+      setChat(prev => [...prev, { role: 'tutor', content: 'Oops! I encountered an error. Please try again.' }]);
+    } finally {
+      setIsTyping(false);
+    }
   }
 
   return (
     <div className="max-w-7xl mx-auto p-4 md:p-8 flex flex-col xl:flex-row gap-8 animate-in fade-in slide-in-from-bottom-4 duration-500 h-[calc(100vh-4rem)] relative z-30">
       {/* Board Column */}
       <div className="flex-1 max-w-[600px] mx-auto w-full flex flex-col gap-6">
+        <div className="flex justify-between items-center px-4 py-2 bg-white/5 border border-white/10 rounded-xl backdrop-blur-md">
+           <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Active Piece Set:</span>
+           <span className="text-xs font-bold text-indigo-400 bg-indigo-500/20 px-3 py-1 rounded-lg uppercase tracking-wider">{pieceSet}</span>
+        </div>
         <div className="backdrop-blur-md bg-white/5 p-4 md:p-6 rounded-3xl border border-white/10 shadow-2xl flex-1 flex flex-col justify-center">
           <Chessboard 
+            key={pieceSet}
             position={fen} 
             onPieceDrop={onDrop}
             onSquareClick={onSquareClick}
+            promotionToSquare={promotionMove?.to ?? null}
+            showPromotionDialog={!!promotionMove}
+            onPromotionPieceSelect={onPromotionPieceSelect}
             onPieceDragBegin={(_, sourceSquare) => {
               getMoveOptions(sourceSquare);
               setMoveFrom(sourceSquare);
@@ -184,7 +248,16 @@ export function AITutorMode({ pieceSet }: { pieceSet: string }) {
                  {game.turn() === 'w' ? "♙ White's Move" : "♟ Black's Move"}
                </span>
             </div>
-            <span className="font-mono text-xs text-slate-400 overflow-hidden text-ellipsis whitespace-nowrap" title={fen}>FEN: {fen}</span>
+            <div className="flex items-center gap-2 flex-1 min-w-0 px-2">
+              <span className="font-mono text-[10px] text-slate-500 font-bold tracking-widest uppercase hidden sm:inline-block">FEN:</span>
+              <input 
+                type="text" 
+                value={fen} 
+                onChange={handleFenChange}
+                className="bg-black/20 border border-white/5 text-slate-300 text-xs font-mono px-2 py-1 rounded w-full max-w-[200px] outline-none focus:border-indigo-500/50 focus:bg-black/40 transition-colors"
+                title="Paste FEN to set up a custom position"
+              />
+            </div>
           </div>
            <button 
              onClick={resetBoard}
@@ -245,8 +318,8 @@ export function AITutorMode({ pieceSet }: { pieceSet: string }) {
                 <Bot size={16} />
               </div>
               <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl rounded-tl-none px-5 py-4 shadow-lg flex items-center gap-2 text-slate-400">
-                <Loader2 size={16} className="animate-spin" />
-                <span className="text-sm font-medium">Analyzing position...</span>
+                <Loader2 size={16} className="animate-spin text-indigo-400" />
+                <span className="text-sm font-medium">{typeof isTyping === 'string' ? isTyping : "Thinking..."}</span>
               </div>
             </div>
           )}
@@ -258,19 +331,22 @@ export function AITutorMode({ pieceSet }: { pieceSet: string }) {
           <div className="flex gap-2 mb-3 overflow-x-auto pb-2 scrollbar-hide">
             <button 
               onClick={() => handleQuickAction('evaluate')}
-              disabled={isTyping}
+              disabled={!!isTyping}
               className="whitespace-nowrap flex items-center gap-1.5 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-xs font-bold uppercase tracking-widest rounded-xl px-4 py-2 transition-colors disabled:opacity-50"
             >
+              {isTyping === "Evaluating position..." && <Loader2 size={14} className="animate-spin" />}
               Evaluate Position
             </button>
             <button 
               onClick={() => handleQuickAction('suggest')}
-              disabled={isTyping}
+              disabled={!!isTyping}
               className="whitespace-nowrap flex items-center gap-1.5 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-xs font-bold uppercase tracking-widest rounded-xl px-4 py-2 transition-colors disabled:opacity-50"
             >
+              {isTyping === "Calculating best lines..." && <Loader2 size={14} className="animate-spin" />}
               Suggest Best Move
             </button>
           </div>
+
 
           <div className="relative flex items-center">
             <input 

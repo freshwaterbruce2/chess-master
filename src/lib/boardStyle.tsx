@@ -29,22 +29,20 @@ export const piecesConfig = (pieceSet: string = 'fresca') => {
   
   pieces.forEach((p) => {
     returnPieces[p] = ({ squareWidth }) => (
-      <div
+      <img
+        key={`${pieceSet}-${p}`}
+        src={`https://lichess1.org/assets/piece/${pieceSet}/${p}.svg`}
         style={{
           width: squareWidth,
           height: squareWidth,
-          backgroundImage: `url(https://lichess1.org/assets/piece/${pieceSet}/${p}.svg)`,
-          backgroundSize: "100%",
-          backgroundRepeat: "no-repeat",
-          backgroundPosition: "center",
           transform: "scale(0.95)",
-          // Refined shadow
           filter: p.startsWith('w')
             ? "drop-shadow(0 4px 3px rgba(0,0,0,0.4))"
             : "drop-shadow(0 4px 3px rgba(0,0,0,0.6))",
           position: "relative",
           top: "-1px" 
         }}
+        alt={p}
       />
     );
   });

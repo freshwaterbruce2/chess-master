@@ -45,20 +45,41 @@ export function Sidebar({ currentView, setCurrentView, pieceSet, setPieceSet }: 
         <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3 block flex items-center gap-2">
           <Settings size={14} /> Options
         </label>
-        <div className="space-y-1">
-          <div className="text-xs text-slate-400 font-medium ml-1 mb-1">Piece Set</div>
-          <select 
-            value={pieceSet} 
-            onChange={(e) => setPieceSet(e.target.value)}
-            className="w-full bg-black/20 border border-white/10 text-white rounded-lg px-3 py-2 outline-none focus:border-indigo-500 focus:bg-black/40 text-sm font-medium transition-colors cursor-pointer appearance-none"
-          >
-            <option value="fresca" className="bg-slate-800">Fresca (3D)</option>
-            <option value="cburnett" className="bg-slate-800">Classic (cburnett)</option>
-            <option value="alpha" className="bg-slate-800">Alpha</option>
-            <option value="merida" className="bg-slate-800">Merida</option>
-            <option value="california" className="bg-slate-800">California</option>
-            <option value="staunty" className="bg-slate-800">Staunty</option>
-          </select>
+        <div className="space-y-2">
+          <div className="text-xs text-slate-400 font-medium ml-1">Piece Set</div>
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              { id: 'fresca', name: 'Fresca' },
+              { id: 'cburnett', name: 'Classic' },
+              { id: 'alpha', name: 'Alpha' },
+              { id: 'merida', name: 'Merida' },
+              { id: 'california', name: 'Calif.' },
+              { id: 'staunty', name: 'Staunty' },
+            ].map((set) => (
+              <button
+                key={set.id}
+                onClick={() => setPieceSet(set.id)}
+                title={set.name}
+                className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all duration-300 relative overflow-hidden group ${
+                  pieceSet === set.id 
+                    ? 'bg-indigo-600/40 border-indigo-400 shadow-[0_0_15px_rgba(99,102,241,0.5)] scale-105 z-10' 
+                    : 'bg-black/40 border-white/10 hover:bg-white/10 hover:border-white/30'
+                }`}
+              >
+                {pieceSet === set.id && (
+                  <div className="absolute inset-0 bg-gradient-to-t from-indigo-500/20 to-transparent pointer-events-none" />
+                )}
+                <img 
+                  src={`https://lichess1.org/assets/piece/${set.id}/wN.svg`} 
+                  alt={set.name} 
+                  className={`w-8 h-8 mb-1 transition-all duration-300 ${pieceSet === set.id ? 'drop-shadow-[0_0_8px_rgba(255,255,255,0.4)] opacity-100 scale-110' : 'opacity-70 scale-95 group-hover:scale-100 group-hover:opacity-100'}`} 
+                />
+                <span className={`text-[10px] font-extrabold uppercase tracking-widest mt-1 transition-colors ${pieceSet === set.id ? 'text-white' : 'text-slate-500 group-hover:text-slate-300'}`}>
+                  {set.name}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>
