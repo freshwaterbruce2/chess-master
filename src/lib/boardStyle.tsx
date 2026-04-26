@@ -23,7 +23,7 @@ export const customDropSquareStyle = {
   backgroundColor: 'rgba(74, 222, 128, 0.2)'
 };
 
-export const piecesConfig = () => {
+export const piecesConfig = (pieceSet: string = 'fresca') => {
   const pieces = ["wP", "wN", "wB", "wR", "wQ", "wK", "bP", "bN", "bB", "bR", "bQ", "bK"];
   const returnPieces: Record<string, React.FC<{ squareWidth: number }>> = {};
   
@@ -33,8 +33,7 @@ export const piecesConfig = () => {
         style={{
           width: squareWidth,
           height: squareWidth,
-          // Switching to frescha for very high resolution 3d looking pieces 
-          backgroundImage: `url(https://lichess1.org/assets/piece/fresca/${p}.svg)`,
+          backgroundImage: `url(https://lichess1.org/assets/piece/${pieceSet}/${p}.svg)`,
           backgroundSize: "100%",
           backgroundRepeat: "no-repeat",
           backgroundPosition: "center",

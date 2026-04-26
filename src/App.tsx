@@ -10,6 +10,7 @@ import { AITutorMode } from './components/AITutorMode';
 
 export default function App() {
   const [currentView, setCurrentView] = useState('home');
+  const [pieceSet, setPieceSet] = useState('fresca');
 
   return (
     <div className="relative flex h-screen bg-[#0f172a] text-white font-sans overflow-hidden">
@@ -19,12 +20,12 @@ export default function App() {
       <div className="absolute bottom-[-100px] right-[-100px] w-96 h-96 bg-purple-600/20 rounded-full blur-[120px] pointer-events-none z-0"></div>
       
       {/* Main Layout */}
-      <Sidebar currentView={currentView} setCurrentView={setCurrentView} />
+      <Sidebar currentView={currentView} setCurrentView={setCurrentView} pieceSet={pieceSet} setPieceSet={setPieceSet} />
       
       <main className="flex-1 overflow-y-auto relative z-10">
         {currentView === 'home' && <HomeDashboard setCurrentView={setCurrentView} />}
-        {currentView === 'lessons' && <LessonMode />}
-        {currentView === 'tutor' && <AITutorMode />}
+        {currentView === 'lessons' && <LessonMode pieceSet={pieceSet} />}
+        {currentView === 'tutor' && <AITutorMode pieceSet={pieceSet} />}
       </main>
     </div>
   );

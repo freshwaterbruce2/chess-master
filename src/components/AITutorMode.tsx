@@ -17,7 +17,7 @@ interface ChatMessage {
   content: string;
 }
 
-export function AITutorMode() {
+export function AITutorMode({ pieceSet }: { pieceSet: string }) {
   const [game, setGame] = useState(new Chess());
   const [fen, setFen] = useState(game.fen());
   const [chat, setChat] = useState<ChatMessage[]>([]);
@@ -25,7 +25,10 @@ export function AITutorMode() {
   const [isTyping, setIsTyping] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
 
-  const customPieces = useMemo(() => piecesConfig(), []);
+  const [moveFrom, setMoveFrom] = useState<string | null>(null);
+  const [optionSquares, setOptionSquares] = useState<Record<string, React.CSSProperties>>({});
+
+  const customPieces = useMemo(() => piecesConfig(pieceSet), [pieceSet]);
 
   useEffect(() => {
     if (chatScrollRef.current) {
@@ -33,7 +36,62 @@ export function AITutorMode() {
     }
   }, [chat]);
 
+  function getMoveOptions(square: string) {
+    const moves = game.moves({ square: square as any, verbose: true });
+    if (moves.length === 0) {
+      setOptionSquares({});
+      return false;
+    }
+
+    const newSquares: Record<string, React.CSSProperties> = {};
+    moves.map((move: any) => {
+      newSquares[move.to] = {
+        background:
+          game.get(move.to as any) && game.get(move.to as any)?.color !== game.get(square as any)?.color
+            ? 'radial-gradient(transparent 0%, transparent 60%, rgba(0,0,0,0.4) 61%, rgba(0,0,0,0.4) 80%, transparent 81%)'
+            : 'radial-gradient(circle, rgba(0,0,0,.4) 22%, transparent 23%)',
+        borderRadius: '50%',
+      };
+      return move;
+    });
+    newSquares[square] = {
+      background: 'rgba(255, 215, 0, 0.4)',
+    };
+    setOptionSquares(newSquares);
+    return true;
+  }
+
+  function onSquareClick(square: string) {
+    if (!moveFrom) {
+      const hasMoveOptions = getMoveOptions(square);
+      if (hasMoveOptions) setMoveFrom(square);
+      return;
+    }
+
+    try {
+      const move = game.move({
+        from: moveFrom,
+        to: square,
+        promotion: 'q',
+      });
+      
+      if (move === null) {
+         const hasMoveOptions = getMoveOptions(square);
+         setMoveFrom(hasMoveOptions ? square : null);
+      } else {
+         setFen(game.fen());
+         setMoveFrom(null);
+         setOptionSquares({});
+      }
+    } catch (e) {
+      const hasMoveOptions = getMoveOptions(square);
+      setMoveFrom(hasMoveOptions ? square : null);
+    }
+  }
+
   function onDrop(sourceSquare: string, targetSquare: string) {
+    setMoveFrom(null);
+    setOptionSquares({});
     try {
       const move = game.move({
         from: sourceSquare,
@@ -56,6 +114,8 @@ export function AITutorMode() {
     setGame(newGame);
     setFen(newGame.fen());
     setChat([]);
+    setMoveFrom(null);
+    setOptionSquares({});
   }
 
   async function handleSend() {
@@ -99,7 +159,13 @@ export function AITutorMode() {
           <Chessboard 
             position={fen} 
             onPieceDrop={onDrop}
-            animationDuration={300}
+            onSquareClick={onSquareClick}
+            onPieceDragBegin={(_, sourceSquare) => {
+              getMoveOptions(sourceSquare);
+              setMoveFrom(sourceSquare);
+            }}
+            animationDuration={350}
+            customSquareStyles={optionSquares}
             customBoardStyle={customBoardStyle}
             customDarkSquareStyle={customDarkSquareStyle}
             customLightSquareStyle={customLightSquareStyle}
@@ -107,8 +173,19 @@ export function AITutorMode() {
             customPieces={customPieces}
           />
         </div>
-        <div className="flex justify-between items-center backdrop-blur-md bg-white/5 px-6 py-4 rounded-2xl border border-white/10 shadow-lg">
-           <span className="font-mono text-sm text-slate-400 overflow-hidden text-ellipsis whitespace-nowrap mr-4">FEN: {fen}</span>
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 backdrop-blur-md bg-white/5 px-6 py-4 rounded-2xl border border-white/10 shadow-lg">
+          <div className="flex items-center gap-4 w-full sm:w-auto overflow-hidden">
+            <div className={`shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-lg shadow-sm border ${
+              game.turn() === 'w' 
+                ? 'bg-[#f0d9b5] text-slate-900 border-[#b58863]/50' 
+                : 'bg-[#1e293b] text-[#f0d9b5] border-[#b58863]/50'
+            }`}>
+               <span className="text-xs font-bold uppercase tracking-wider">
+                 {game.turn() === 'w' ? "♙ White's Move" : "♟ Black's Move"}
+               </span>
+            </div>
+            <span className="font-mono text-xs text-slate-400 overflow-hidden text-ellipsis whitespace-nowrap" title={fen}>FEN: {fen}</span>
+          </div>
            <button 
              onClick={resetBoard}
              className="flex items-center gap-2 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 font-bold text-xs uppercase tracking-widest px-4 py-2 rounded-xl transition-colors shrink-0"

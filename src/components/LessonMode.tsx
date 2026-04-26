@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Chessboard } from 'react-chessboard';
 import { Chess } from 'chess.js';
 import { LESSONS } from '../lib/lessons';
-import { CheckCircle2, ChevronRight, RefreshCw } from 'lucide-react';
+import { CheckCircle2, ChevronRight, RefreshCw, RefreshCcw } from 'lucide-react';
 import { 
   customBoardStyle, 
   customDarkSquareStyle, 
@@ -11,17 +11,19 @@ import {
   piecesConfig 
 } from '../lib/boardStyle';
 
-export function LessonMode() {
+export function LessonMode({ pieceSet }: { pieceSet: string }) {
   const [currentLessonIndex, setCurrentLessonIndex] = useState(0);
   const [game, setGame] = useState(new Chess(LESSONS[0].initialFen));
   const [fen, setFen] = useState(LESSONS[0].initialFen);
   const [isSuccess, setIsSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [moveFrom, setMoveFrom] = useState<string | null>(null);
+  const [optionSquares, setOptionSquares] = useState<Record<string, React.CSSProperties>>({});
 
   const lesson = LESSONS[currentLessonIndex];
   
   // Memoize custom pieces so we don't recreate them every render
-  const customPieces = useMemo(() => piecesConfig(), []);
+  const customPieces = useMemo(() => piecesConfig(pieceSet), [pieceSet]);
 
   useEffect(() => {
     const newGame = new Chess(lesson.initialFen);
@@ -29,7 +31,34 @@ export function LessonMode() {
     setFen(newGame.fen());
     setIsSuccess(false);
     setErrorMsg("");
+    setMoveFrom(null);
+    setOptionSquares({});
   }, [currentLessonIndex, lesson]);
+
+  function getMoveOptions(square: string) {
+    const moves = game.moves({ square: square as any, verbose: true });
+    if (moves.length === 0) {
+      setOptionSquares({});
+      return false;
+    }
+
+    const newSquares: Record<string, React.CSSProperties> = {};
+    moves.map((move: any) => {
+      newSquares[move.to] = {
+        background:
+          game.get(move.to as any) && game.get(move.to as any)?.color !== game.get(square as any)?.color
+            ? 'radial-gradient(transparent 0%, transparent 60%, rgba(0,0,0,0.4) 61%, rgba(0,0,0,0.4) 80%, transparent 81%)'
+            : 'radial-gradient(circle, rgba(0,0,0,.4) 22%, transparent 23%)',
+        borderRadius: '50%',
+      };
+      return move;
+    });
+    newSquares[square] = {
+      background: 'rgba(255, 215, 0, 0.4)', // Highlight selected square
+    };
+    setOptionSquares(newSquares);
+    return true;
+  }
 
   function makeMove(move: { from: string; to: string; promotion?: string }) {
     if (isSuccess) return false;
@@ -60,7 +89,33 @@ export function LessonMode() {
     }
   }
 
+  function onSquareClick(square: string) {
+    if (isSuccess) return;
+
+    if (!moveFrom) {
+      const hasOptions = getMoveOptions(square);
+      if (hasOptions) setMoveFrom(square);
+      return;
+    }
+
+    const success = makeMove({
+      from: moveFrom,
+      to: square,
+      promotion: 'q',
+    });
+
+    if (success) {
+      setMoveFrom(null);
+      setOptionSquares({});
+    } else {
+      const hasOptions = getMoveOptions(square);
+      setMoveFrom(hasOptions ? square : null);
+    }
+  }
+
   function onDrop(sourceSquare: string, targetSquare: string) {
+    setMoveFrom(null);
+    setOptionSquares({});
     const move = makeMove({
       from: sourceSquare,
       to: targetSquare,
@@ -81,6 +136,8 @@ export function LessonMode() {
     setFen(newGame.fen());
     setIsSuccess(false);
     setErrorMsg("");
+    setMoveFrom(null);
+    setOptionSquares({});
   }
 
   return (
@@ -89,13 +146,39 @@ export function LessonMode() {
         <Chessboard 
           position={fen} 
           onPieceDrop={onDrop}
-          animationDuration={300}
+          onSquareClick={onSquareClick}
+          onPieceDragBegin={(_, sourceSquare) => {
+            getMoveOptions(sourceSquare);
+            setMoveFrom(sourceSquare);
+          }}
+          animationDuration={350}
+          customSquareStyles={optionSquares}
           customBoardStyle={customBoardStyle}
           customDarkSquareStyle={customDarkSquareStyle}
           customLightSquareStyle={customLightSquareStyle}
           customDropSquareStyle={customDropSquareStyle}
           customPieces={customPieces}
         />
+        
+        <div className="mt-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 py-4 px-6 rounded-2xl bg-white/5 border border-white/10">
+          <div className="flex items-center gap-4 w-full sm:w-auto overflow-hidden">
+            <div className={`shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-lg shadow-sm border ${
+              game.turn() === 'w' 
+                ? 'bg-[#f0d9b5] text-slate-900 border-[#b58863]/50' 
+                : 'bg-[#1e293b] text-[#f0d9b5] border-[#b58863]/50'
+            }`}>
+               <span className="text-xs font-bold uppercase tracking-wider">
+                 {game.turn() === 'w' ? "♙ White's Move" : "♟ Black's Move"}
+               </span>
+            </div>
+          </div>
+          <button 
+             onClick={retryLesson}
+             className="flex items-center gap-2 hover:bg-white/10 text-slate-400 hover:text-white font-bold text-xs uppercase tracking-widest px-4 py-2 rounded-xl transition-colors shrink-0"
+           >
+             <RefreshCcw size={16} /> Reset
+          </button>
+        </div>
       </div>
       
       <div className="flex-1 flex flex-col justify-center">
@@ -113,7 +196,7 @@ export function LessonMode() {
           </div>
         )}
 
-        {isSuccess ? (
+        {isSuccess && (
           <div className="backdrop-blur-md bg-emerald-500/10 border border-emerald-500/20 p-6 rounded-3xl animate-in slide-in-from-bottom-2 fade-in shadow-2xl">
             <div className="flex items-center gap-3 text-emerald-400 font-bold text-xl mb-3">
               <CheckCircle2 size={24} />
@@ -131,13 +214,6 @@ export function LessonMode() {
               </button>
             )}
           </div>
-        ) : (
-          <button 
-            onClick={retryLesson}
-            className="flex items-center justify-center gap-2 px-6 py-3 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 font-bold uppercase tracking-widest rounded-xl shadow-lg transition-colors w-max text-xs"
-          >
-            <RefreshCw size={16} /> Restart Position
-          </button>
         )}
       </div>
     </div>
