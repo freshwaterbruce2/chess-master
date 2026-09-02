@@ -16,8 +16,12 @@ dotenv.config({ path: fileURLToPath(new URL('.env', import.meta.url)) });
 
 const app = express();
 const PORT = Number(process.env.PORT || 3107);
-// Default stays gemini-2.5-flash (free-tier capable). Override via GEMINI_MODEL if needed.
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// gemini-2.5-flash returns 404 for new API keys; Google directs new users to gemini-3.6-flash.
+const RAW_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const GEMINI_MODEL =
+  RAW_GEMINI_MODEL === 'gemini-2.5-flash' || RAW_GEMINI_MODEL === 'models/gemini-2.5-flash'
+    ? 'gemini-3.6-flash'
+    : RAW_GEMINI_MODEL;
 const { dailyCap: AI_DAILY_CAP, monthlyCap: AI_MONTHLY_CAP } = getCapDefaults();
 
 const allowedOrigins = new Set(
@@ -104,7 +108,7 @@ Rules:
 - Keep the answer concise and formatted in Markdown.`;
 }
 
-/** Safe text extract: response.text throws when thinking ate maxOutputTokens / no parts. */
+/** Safe text extract: response.text can throw when candidates have no text parts. */
 function extractAdviceText(response) {
   try {
     const text = response?.text;
@@ -148,7 +152,6 @@ app.get('/api/health', (req, res) => {
 });
 
 app.post('/api/chess/advice', async (req, res) => {
-  // 1) Kill switch - missing/empty/false rejects all advice
   if (!isAiTutorEnabled()) {
     res.status(503).json({
       error:
@@ -168,7 +171,6 @@ app.post('/api/chess/advice', async (req, res) => {
     return;
   }
 
-  // 2) Per-install daily/monthly caps (persisted under render-backend/data/)
   const reserve = checkAndReserveAdvice(installId);
   if (!reserve.ok) {
     res.status(reserve.status).json({
@@ -181,7 +183,6 @@ app.post('/api/chess/advice', async (req, res) => {
     return;
   }
 
-  // 3) Gemini (Chess-only; never Tutor OpenRouter)
   if (!gemini) {
     releaseReservedAdvice(installId);
     res.status(503).json({ error: 'Gemini API key is not configured on the server.' });
@@ -211,10 +212,7 @@ app.post('/api/chess/advice', async (req, res) => {
   }
 
   try {
-    // gemini-2.5-flash thinking tokens count against maxOutputTokens.
-    // With budget 700 and dynamic thinking, visible text is often empty and
-    // response.text throws -> 502. Disable thinking for beginner advice;
-    // raise output ceiling as a safety margin.
+    // Gemini 3.x: thinkingLevel (MINIMAL) instead of thinkingBudget.
     const response = await gemini.models.generateContent({
       model: GEMINI_MODEL,
       contents: buildPrompt(fen, question, legalMoves),
@@ -222,7 +220,7 @@ app.post('/api/chess/advice', async (req, res) => {
         temperature: 0.35,
         maxOutputTokens: 2048,
         thinkingConfig: {
-          thinkingBudget: 0,
+          thinkingLevel: 'MINIMAL',
         },
       },
     });
@@ -253,6 +251,7 @@ app.post('/api/chess/advice', async (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[OK] Chess Master API listening on port ${PORT}`);
   console.log(`[OK] Gemini configured: ${gemini ? 'yes' : 'no'}`);
+  console.log(`[OK] Gemini model: ${GEMINI_MODEL}`);
   console.log(`[OK] AI tutor enabled: ${isAiTutorEnabled() ? 'yes' : 'no (kill switch)'}`);
   console.log(`[OK] Caps: ${AI_DAILY_CAP}/day, ${AI_MONTHLY_CAP}/month per X-Chess-Install-Id`);
 });
