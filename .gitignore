@@ -1,0 +1,15 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+android/app/build/
+*.apk
+*.aab
+render-backend/data/*.json
+*.jks
+*.keystore
+local.properties

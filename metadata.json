@@ -1,0 +1,6 @@
+{
+  "name": "Chess Master",
+  "description": "An interactive chess learning app with lessons, puzzles, and an AI tutor powered by Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

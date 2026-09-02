@@ -1,0 +1,21 @@
+{
+  "name": "@chess-master/games",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "files": ["src"],
+  "exports": {
+    "./chess": "./src/chess/index.ts"
+  },
+  "peerDependencies": {
+    "chess.js": "^1.4.0",
+    "react": "19.2.4",
+    "react-chessboard": "^5.10.0",
+    "react-dom": "19.2.4"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.5.0",
+    "three": "^0.183.2"
+  }
+}
