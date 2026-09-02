@@ -16,6 +16,7 @@ dotenv.config({ path: fileURLToPath(new URL('.env', import.meta.url)) });
 
 const app = express();
 const PORT = Number(process.env.PORT || 3107);
+// Default stays gemini-2.5-flash (free-tier capable). Override via GEMINI_MODEL if needed.
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const { dailyCap: AI_DAILY_CAP, monthlyCap: AI_MONTHLY_CAP } = getCapDefaults();
 
@@ -103,6 +104,37 @@ Rules:
 - Keep the answer concise and formatted in Markdown.`;
 }
 
+/** Safe text extract: response.text throws when thinking ate maxOutputTokens / no parts. */
+function extractAdviceText(response) {
+  try {
+    const text = response?.text;
+    if (typeof text === 'string' && text.trim()) return text.trim();
+  } catch (err) {
+    console.error('[Gemini] response.text unavailable:', err?.message || err);
+  }
+
+  const candidate = response?.candidates?.[0];
+  const parts = candidate?.content?.parts;
+  if (Array.isArray(parts)) {
+    const joined = parts
+      .map((p) => (typeof p?.text === 'string' ? p.text : ''))
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+    if (joined) return joined;
+  }
+
+  const finishReason = candidate?.finishReason || 'unknown';
+  const thoughts = response?.usageMetadata?.thoughtsTokenCount;
+  console.error(
+    '[Gemini] empty advice text; finishReason:',
+    finishReason,
+    'thoughtsTokenCount:',
+    thoughts ?? 'n/a',
+  );
+  return null;
+}
+
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'healthy',
@@ -116,7 +148,7 @@ app.get('/api/health', (req, res) => {
 });
 
 app.post('/api/chess/advice', async (req, res) => {
-  // 1) Kill switch — missing/empty/false rejects all advice
+  // 1) Kill switch - missing/empty/false rejects all advice
   if (!isAiTutorEnabled()) {
     res.status(503).json({
       error:
@@ -131,7 +163,7 @@ app.post('/api/chess/advice', async (req, res) => {
   if (!installId) {
     res.status(400).json({
       error:
-        'Missing or invalid X-Chess-Install-Id header (8–128 chars: letters, digits, _ or -).',
+        'Missing or invalid X-Chess-Install-Id header (8-128 chars: letters, digits, _ or -).',
     });
     return;
   }
@@ -179,17 +211,31 @@ app.post('/api/chess/advice', async (req, res) => {
   }
 
   try {
+    // gemini-2.5-flash thinking tokens count against maxOutputTokens.
+    // With budget 700 and dynamic thinking, visible text is often empty and
+    // response.text throws -> 502. Disable thinking for beginner advice;
+    // raise output ceiling as a safety margin.
     const response = await gemini.models.generateContent({
       model: GEMINI_MODEL,
       contents: buildPrompt(fen, question, legalMoves),
       config: {
         temperature: 0.35,
-        maxOutputTokens: 700,
+        maxOutputTokens: 2048,
+        thinkingConfig: {
+          thinkingBudget: 0,
+        },
       },
     });
 
+    const advice = extractAdviceText(response);
+    if (!advice) {
+      releaseReservedAdvice(installId);
+      res.status(502).json({ error: 'Gemini analysis failed. Please try again.' });
+      return;
+    }
+
     res.json({
-      advice: response.text || "I couldn't generate advice for this position.",
+      advice,
       usage: {
         dayCount: reserve.dayCount,
         monthCount: reserve.monthCount,
@@ -210,4 +256,3 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`[OK] AI tutor enabled: ${isAiTutorEnabled() ? 'yes' : 'no (kill switch)'}`);
   console.log(`[OK] Caps: ${AI_DAILY_CAP}/day, ${AI_MONTHLY_CAP}/month per X-Chess-Install-Id`);
 });
-
