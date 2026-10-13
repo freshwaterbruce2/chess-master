@@ -6,7 +6,8 @@
   "scripts": {
     "build": "npm install && node --check server.mjs",
     "start": "node server.mjs",
-    "dev": "node server.mjs"
+    "dev": "node server.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
