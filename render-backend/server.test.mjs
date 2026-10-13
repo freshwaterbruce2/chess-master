@@ -1,473 +1,290 @@
 import assert from 'node:assert';
-import { describe, it, mock } from 'node:test';
-import { createApp } from './server.mjs';
+import { describe, it, before, after, mock } from 'node:test';
+import { createApp, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL, DEFAULT_PROVIDERS } from './server.mjs';
 
-const VALID_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-const VALID_INSTALL_ID = 'test-install-12345';
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const QUESTION = 'Zebra-question-7731: what is a good first move?';
+const ANSWER = 'Unicorn-answer-4419: try **e4**.';
+let idSeq = 0;
+const newInstallId = () => `test-install-${process.pid}-${++idSeq}-abcdef`;
 
-function mockGemini(responses = []) {
-  let callCount = 0;
-  return {
-    models: {
-      generateContent: mock.fn(async () => {
-        const response = responses[callCount];
-        callCount++;
-        if (response instanceof Error) throw response;
-        return response;
-      }),
-    },
-  };
+function okBody(text) {
+  return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: text } }] }) };
+}
+function errBody(status) {
+  return { ok: false, status, json: async () => ({ error: { code: status, message: 'upstream detail' } }) };
 }
 
-function makeError(status, message) {
-  const err = new Error(message);
-  err.status = status;
-  err.code = status;
-  return err;
+/** responses: array of fetch results; a function is called with (url, init); 'hang' never resolves until abort. */
+function mockFetch(responses) {
+  let i = 0;
+  return mock.fn(async (url, init) => {
+    const r = responses[Math.min(i++, responses.length - 1)];
+    if (r === 'hang') {
+      return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+    }
+    if (typeof r === 'function') return r(url, init);
+    return r;
+  });
 }
 
-function make503(message = 'Service unavailable') {
-  return makeError(503, message);
+function env(overrides = {}) {
+  return { AI_TUTOR_ENABLED: 'true', OPENROUTER_API_KEY: 'mock-key', ...overrides };
 }
 
-function mockEnv(overrides = {}) {
-  return {
-    AI_TUTOR_ENABLED: 'true',
-    GEMINI_API_KEY: 'mock-key',
-    GEMINI_MODEL: 'gemini-3.6-flash',
-    GEMINI_FALLBACK_MODEL: 'gemini-3.5-flash-lite',
-    ...overrides,
-  };
+async function withServer(app, fn) {
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((r) => server.once('listening', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    return await fn(base);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
 }
 
-function createRequest(body) {
-  return {
+async function advice(base, { installId = newInstallId(), fen = START_FEN, question = QUESTION } = {}) {
+  const res = await fetch(`${base}/api/chess/advice`, {
     method: 'POST',
-    url: '/api/chess/advice',
-    headers: {
-      'content-type': 'application/json',
-      'x-chess-install-id': VALID_INSTALL_ID,
-    },
-    body: JSON.stringify(body),
-  };
+    headers: { 'content-type': 'application/json', 'x-chess-install-id': installId },
+    body: JSON.stringify({ fen, question }),
+  });
+  return { status: res.status, headers: res.headers, body: await res.json(), installId };
 }
-
-async function sendRequest(app, req) {
-  return new Promise((resolve) => {
-    const request = {
-      method: req.method,
-      url: req.url,
-      headers: req.headers || {},
-      ip: '127.0.0.1',
-      body: req.body ? JSON.parse(req.body) : undefined,
-    };
-
-    const response = {
-      statusCode: 200,
-      headers: {},
-      body: '',
-      status(code) {
-        this.statusCode = code;
-        return this;
-      },
-      header(key, value) {
-        this.headers[key.toLowerCase()] = String(value);
-        return this;
-      },
-      setHeader(key, value) {
-        this.headers[key.toLowerCase()] = String(value);
-        return this;
-      },
-      json(data) {
-        this.body = JSON.stringify(data);
-        resolve(this);
-      },
-      end() {
-        resolve(this);
-      },
-    };
-
-    const stack = app._router.stack.filter(layer => layer.route);
-    let handled = false;
-
-    for (const layer of stack) {
-      const route = layer.route;
-      if (route && route.path === request.url) {
-        const method = request.method.toLowerCase();
-        if (route.methods[method]) {
-          handled = true;
-          const middlewares = [...app._router.stack.filter(l => !l.route), layer];
-          let idx = 0;
-          
-          const next = (err) => {
-            if (err) {
-              response.statusCode = 500;
-              response.json({ error: err.message });
-              return;
-            }
-            if (idx >= middlewares.length) {
-              return;
-            }
-            const currentLayer = middlewares[idx++];
-            try {
-              if (currentLayer.route) {
-                currentLayer.route.stack[0].handle(request, response, next);
-              } else {
-                currentLayer.handle(request, response, next);
-              }
-            } catch (error) {
-              response.statusCode = 500;
-              response.json({ error: error.message });
-            }
-          };
-          
-          next();
-          break;
-        }
-      }
-    }
-
-    if (!handled) {
-      response.statusCode = 404;
-      response.json({ error: 'Not found' });
-    }
-  });
+async function health(base) {
+  const res = await fetch(`${base}/api/health`);
+  return { status: res.status, body: await res.json() };
 }
+const fastApp = (fetchMock, extra = {}) =>
+  createApp({ fetch: fetchMock, sleep: async () => {}, random: () => 0, env: env(extra.env), ...extra.opts });
+const bodyOf = (call) => JSON.parse(call.arguments[1].body);
 
-describe('Chess Coach Resilience', () => {
-  it('Test 1: Primary 503 x2 then text -> 200 advice; 3 calls; sleeps within jitter bounds', async () => {
-    const sleeps = [];
-    const gemini = mockGemini([
-      make503('UNAVAILABLE'),
-      make503('high demand'),
-      { text: 'Good move!' },
-    ]);
-
-    const app = createApp({
-      gemini,
-      now: () => Date.now(),
-      sleep: async (ms) => {
-        sleeps.push(ms);
-        return Promise.resolve();
-      },
-      random: () => 0.5,
-      env: mockEnv(),
+describe('Chess coach via OpenRouter', () => {
+  it('1: primary ok -> 200 advice, model, request settings (zdr, data_collection deny, providers)', async () => {
+    const f = mockFetch([okBody(ANSWER)]);
+    await withServer(fastApp(f), async (base) => {
+      const r = await advice(base);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.advice, ANSWER);
+      assert.strictEqual(r.body.model, DEFAULT_MODEL);
+      assert.ok(r.body.usage.dailyCap > 0);
     });
-
-    const req = createRequest({ fen: VALID_FEN, question: 'What should I do?' });
-    const res = await sendRequest(app, req);
-
-    assert.strictEqual(res.statusCode, 200);
-    const body = JSON.parse(res.body);
-    assert.strictEqual(body.advice, 'Good move!');
-    assert.strictEqual(gemini.models.generateContent.mock.calls.length, 3);
-    assert.strictEqual(sleeps.length, 2);
-    
-    assert.ok(sleeps[0] >= 0 && sleeps[0] <= 500, `First sleep ${sleeps[0]} should be 0-500ms`);
-    assert.ok(sleeps[1] >= 0 && sleeps[1] <= 1000, `Second sleep ${sleeps[1]} should be 0-1000ms`);
+    assert.strictEqual(f.mock.calls.length, 1);
+    const [url, init] = f.mock.calls[0].arguments;
+    assert.strictEqual(url, 'https://openrouter.ai/api/v1/chat/completions');
+    assert.strictEqual(init.headers.Authorization, 'Bearer mock-key');
+    const b = bodyOf(f.mock.calls[0]);
+    assert.strictEqual(b.model, 'anthropic/claude-haiku-5.5');
+    assert.deepStrictEqual(b.provider, {
+      zdr: true, data_collection: 'deny', only: DEFAULT_PROVIDERS, order: DEFAULT_PROVIDERS, allow_fallbacks: true,
+    });
+    assert.ok(b.messages[0].content.includes(START_FEN));
   });
 
-  it('Test 2: 3x 503, fallback empty -> 503 COACH_BUSY, non-empty error, Retry-After, cap released', async () => {
-    const gemini = mockGemini([
-      make503('UNAVAILABLE'),
-      make503('UNAVAILABLE'),
-      make503('UNAVAILABLE'),
-    ]);
-
-    const app = createApp({
-      gemini,
-      now: () => Date.now(),
-      sleep: async () => Promise.resolve(),
-      random: () => 0,
-      env: mockEnv({ GEMINI_FALLBACK_MODEL: '' }),
-    });
-
-    const req = createRequest({ fen: VALID_FEN, question: 'Help me' });
-    const res = await sendRequest(app, req);
-
-    assert.strictEqual(res.statusCode, 503);
-    assert.strictEqual(res.headers['retry-after'], '15');
-    const body = JSON.parse(res.body);
-    assert.ok(body.error.length > 0, 'Error should be non-empty');
-    assert.strictEqual(body.code, 'COACH_BUSY');
-    assert.strictEqual(body.retryAfterSec, 15);
+  it('2: OPENROUTER_PROVIDERS overrides only/order', async () => {
+    const f = mockFetch([okBody(ANSWER)]);
+    await withServer(fastApp(f, { env: { OPENROUTER_PROVIDERS: 'amazon-bedrock, azure' } }), (base) => advice(base));
+    assert.deepStrictEqual(bodyOf(f.mock.calls[0]).provider.only, ['amazon-bedrock', 'azure']);
   });
 
-  it('Test 3: 3x 503, fallback text -> 200; fallback called with gemini-3.5-flash-lite', async () => {
-    const gemini = mockGemini([
-      make503('UNAVAILABLE'),
-      make503('UNAVAILABLE'),
-      make503('UNAVAILABLE'),
-      { text: 'Fallback advice!' },
-    ]);
-
-    const app = createApp({
-      gemini,
-      now: () => Date.now(),
-      sleep: async () => Promise.resolve(),
-      random: () => 0,
-      env: mockEnv(),
+  it('3: primary 404 (non-retriable) -> no retry, falls back once -> 200 with fallback model', async () => {
+    const f = mockFetch([errBody(404), okBody(ANSWER)]);
+    await withServer(fastApp(f), async (base) => {
+      const r = await advice(base);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.model, DEFAULT_FALLBACK_MODEL);
     });
-
-    const req = createRequest({ fen: VALID_FEN, question: 'Help' });
-    const res = await sendRequest(app, req);
-
-    assert.strictEqual(res.statusCode, 200);
-    const body = JSON.parse(res.body);
-    assert.strictEqual(body.advice, 'Fallback advice!');
-    assert.strictEqual(body.model, 'gemini-3.5-flash-lite');
-    assert.strictEqual(gemini.models.generateContent.mock.calls.length, 4);
-    
-    const fallbackCall = gemini.models.generateContent.mock.calls[3];
-    assert.strictEqual(fallbackCall.arguments[0].model, 'gemini-3.5-flash-lite');
-    assert.strictEqual(fallbackCall.arguments[0].config?.thinkingConfig, undefined);
+    assert.strictEqual(f.mock.calls.length, 2);
+    assert.strictEqual(bodyOf(f.mock.calls[1]).model, 'openai/gpt-5.6-luna');
   });
 
-  it('Test 4: Fallback 503 too -> 503 COACH_BUSY', async () => {
-    const gemini = mockGemini([
-      make503('UNAVAILABLE'),
-      make503('UNAVAILABLE'),
-      make503('UNAVAILABLE'),
-      make503('UNAVAILABLE'),
-      make503('UNAVAILABLE'),
-      make503('UNAVAILABLE'),
-    ]);
-
-    const app = createApp({
-      gemini,
-      now: () => Date.now(),
-      sleep: async () => Promise.resolve(),
-      random: () => 0,
-      env: mockEnv(),
-    });
-
-    const req = createRequest({ fen: VALID_FEN, question: 'Help' });
-    const res = await sendRequest(app, req);
-
-    assert.strictEqual(res.statusCode, 503);
-    const body = JSON.parse(res.body);
-    assert.strictEqual(body.code, 'COACH_BUSY');
-    assert.strictEqual(body.retryAfterSec, 15);
-  });
-
-  it('Test 5: 400/403/404 -> 1 call, 502 COACH_ERROR; 429 -> 1 call, no retries', async () => {
-    for (const status of [400, 403, 404, 429]) {
-      const gemini = mockGemini([makeError(status, `Error ${status}`)]);
-      
-      const app = createApp({
-        gemini,
-        now: () => Date.now(),
-        sleep: async () => Promise.resolve(),
-        random: () => 0,
-        env: mockEnv(),
+  it('4: primary 400/401/403 and empty answer each fall back', async () => {
+    for (const first of [errBody(400), errBody(401), errBody(403), okBody('   ')]) {
+      const f = mockFetch([first, okBody(ANSWER)]);
+      await withServer(fastApp(f), async (base) => {
+        const r = await advice(base);
+        assert.strictEqual(r.status, 200);
+        assert.strictEqual(r.body.model, DEFAULT_FALLBACK_MODEL);
       });
-
-      const req = createRequest({ fen: VALID_FEN, question: 'Help' });
-      const res = await sendRequest(app, req);
-
-      assert.strictEqual(res.statusCode, 502);
-      const body = JSON.parse(res.body);
-      assert.strictEqual(body.code, 'COACH_ERROR');
-      assert.strictEqual(gemini.models.generateContent.mock.calls.length, 1, `Status ${status} should have 1 call`);
+      assert.strictEqual(f.mock.calls.length, 2);
     }
   });
 
-  it('Test 6: Every attempt hangs -> finishes <= 20s with COACH_BUSY; no attempt starts past deadline', async () => {
-    let currentTime = 0;
-    const callTimes = [];
-    
-    const gemini = {
-      models: {
-        generateContent: mock.fn(async () => {
-          callTimes.push(currentTime);
-          await new Promise(resolve => setTimeout(resolve, 100000));
-        }),
-      },
-    };
-
-    const app = createApp({
-      gemini,
-      now: () => currentTime,
-      sleep: async (ms) => {
-        currentTime += ms;
-        return Promise.resolve();
-      },
-      random: () => 0.5,
-      env: mockEnv(),
+  it('5: 429 then 500 then ok on primary -> 3 calls, bounded jittered sleeps', async () => {
+    const sleeps = [];
+    const f = mockFetch([errBody(429), errBody(500), okBody(ANSWER)]);
+    const app = createApp({ fetch: f, sleep: async (ms) => { sleeps.push(ms); }, random: () => 0.999, env: env() });
+    await withServer(app, async (base) => {
+      const r = await advice(base);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.model, DEFAULT_MODEL);
     });
+    assert.strictEqual(f.mock.calls.length, 3);
+    assert.strictEqual(sleeps.length, 2);
+    assert.ok(sleeps[0] <= 500 && sleeps[1] <= 1000, `sleeps ${sleeps}`);
+  });
 
-    const req = createRequest({ fen: VALID_FEN, question: 'Help' });
-    const startTime = currentTime;
-    
-    const responsePromise = sendRequest(app, req);
-    
-    while (currentTime < startTime + 25000) {
-      currentTime += 100;
-      await new Promise(resolve => setImmediate(resolve));
-      if (responsePromise && typeof responsePromise.then === 'function') {
-        const settled = await Promise.race([
-          responsePromise.then(() => true),
-          new Promise(resolve => setImmediate(() => resolve(false)))
-        ]);
-        if (settled) break;
+  it('6: all 503 on primary and fallback -> 503 COACH_BUSY, Retry-After, non-empty error, 6 calls, cap released', async () => {
+    const f = mockFetch([errBody(503)]);
+    const installId = newInstallId();
+    await withServer(fastApp(f), async (base) => {
+      const r = await advice(base, { installId });
+      assert.strictEqual(r.status, 503);
+      assert.strictEqual(r.body.code, 'COACH_BUSY');
+      assert.ok(r.body.error.length > 0);
+      assert.strictEqual(r.headers.get('retry-after'), '15');
+      const ok = mockFetch([okBody(ANSWER)]);
+      void ok;
+    });
+    assert.strictEqual(f.mock.calls.length, 6);
+    // cap released: a later success reports dayCount 1 for this install
+    const f2 = mockFetch([okBody(ANSWER)]);
+    await withServer(fastApp(f2), async (base) => {
+      const r = await advice(base, { installId });
+      assert.strictEqual(r.body.usage.dayCount, 1);
+    });
+  });
+
+  it('7: primary 404 and fallback 404 -> 502 COACH_ERROR with error text', async () => {
+    const f = mockFetch([errBody(404), errBody(404)]);
+    await withServer(fastApp(f), async (base) => {
+      const r = await advice(base);
+      assert.strictEqual(r.status, 502);
+      assert.strictEqual(r.body.code, 'COACH_ERROR');
+      assert.ok(r.body.error.length > 0);
+    });
+    assert.strictEqual(f.mock.calls.length, 2);
+  });
+
+  it('8: every attempt hangs -> COACH_BUSY within the 20 s budget (real timers, short budget)', async () => {
+    const f = mockFetch(['hang']);
+    const app = createApp({ fetch: f, sleep: async () => {}, random: () => 0, env: env({ COACH_TOTAL_BUDGET_MS: '600' }) });
+    const t0 = Date.now();
+    await withServer(app, async (base) => {
+      const r = await advice(base);
+      assert.strictEqual(r.status, 503);
+      assert.strictEqual(r.body.code, 'COACH_BUSY');
+    });
+    assert.ok(Date.now() - t0 < 3000);
+  });
+
+  it('9: bad input (invalid FEN) -> 400, no upstream call', async () => {
+    const f = mockFetch([okBody(ANSWER)]);
+    await withServer(fastApp(f), async (base) => {
+      const r = await advice(base, { fen: 'not a fen' });
+      assert.strictEqual(r.status, 400);
+    });
+    assert.strictEqual(f.mock.calls.length, 0);
+  });
+
+  it('10: LEGAL install ID never appears in the outbound URL, headers or body', async () => {
+    const f = mockFetch([errBody(500), errBody(404), okBody(ANSWER)]);
+    const installId = newInstallId();
+    await withServer(fastApp(f), (base) => advice(base, { installId }));
+    assert.ok(f.mock.calls.length >= 2);
+    for (const call of f.mock.calls) {
+      const [url, init] = call.arguments;
+      const dump = JSON.stringify({ url, headers: init.headers, body: init.body });
+      assert.ok(!dump.includes(installId), 'install ID leaked to OpenRouter');
+      assert.ok(!/install/i.test(JSON.stringify(init.headers)), 'install header forwarded');
+    }
+  });
+
+  it('11: LEGAL logs carry no FEN, question, answer or install ID (success and failure paths)', async () => {
+    const lines = [];
+    const spies = ['log', 'error', 'warn', 'info'].map((k) =>
+      mock.method(console, k, (...a) => { lines.push(a.map(String).join(' ')); }));
+    const installId = newInstallId();
+    try {
+      await withServer(fastApp(mockFetch([okBody(ANSWER)])), (base) => advice(base, { installId }));
+      await withServer(fastApp(mockFetch([errBody(429), errBody(500), errBody(503), okBody(''), errBody(404)])),
+        (base) => advice(base, { installId }));
+      await withServer(fastApp(mockFetch([errBody(503)])), (base) => advice(base, { installId }));
+    } finally {
+      spies.forEach((s) => s.mock.restore());
+    }
+    const all = lines.join('\n');
+    assert.ok(lines.length > 0, 'expected some status logs');
+    for (const secret of [START_FEN, 'rnbqkbnr', QUESTION, 'Zebra-question', ANSWER, 'Unicorn-answer', installId, 'mock-key']) {
+      assert.ok(!all.includes(secret), `log leaked: ${secret}`);
+    }
+    assert.match(all, /status=\d+/);
+  });
+
+  it('12: health ok -> healthy, 1.0.7 fields intact, primary+fallback status', async () => {
+    const f = mockFetch([okBody('OK'), okBody('OK')]);
+    await withServer(fastApp(f), async (base) => {
+      const h = await health(base);
+      assert.strictEqual(h.status, 200);
+      for (const k of ['status', 'geminiConfigured', 'model', 'aiTutorEnabled', 'dailyCap', 'monthlyCap', 'installIdHeader', 'gemini', 'fallbackModel', 'checkedAt']) {
+        assert.ok(k in h.body, `missing ${k}`);
       }
-    }
-
-    const res = await responsePromise;
-    const elapsed = currentTime - startTime;
-    
-    assert.ok(elapsed <= 20100, `Should finish in ~20s, took ${elapsed}ms`);
-    assert.strictEqual(res.statusCode, 503);
-    const body = JSON.parse(res.body);
-    assert.strictEqual(body.code, 'COACH_BUSY');
-    
-    for (const callTime of callTimes) {
-      assert.ok(callTime < startTime + 20000, `Call at ${callTime} should not start past 20s deadline`);
-    }
+      assert.strictEqual(h.body.status, 'healthy');
+      assert.strictEqual(h.body.gemini, 'ok');
+      assert.strictEqual(h.body.geminiConfigured, true);
+      assert.strictEqual(h.body.primary.status, 'ok');
+      assert.strictEqual(h.body.fallback.status, 'ok');
+      assert.strictEqual(h.body.fallbackOk, true);
+    });
+    assert.strictEqual(f.mock.calls.length, 2);
+    for (const c of f.mock.calls) assert.strictEqual(bodyOf(c).provider.zdr, true);
   });
 
-  it('Test 7: Empty text -> no retry, 502 COACH_ERROR', async () => {
-    const gemini = mockGemini([{ text: '' }]);
-
-    const app = createApp({
-      gemini,
-      now: () => Date.now(),
-      sleep: async () => Promise.resolve(),
-      random: () => 0,
-      env: mockEnv(),
+  it('13: health primary 404, fallback 503 -> degraded, error codes reported, HTTP 200', async () => {
+    const f = mock.fn(async (url, init) => (JSON.parse(init.body).model === DEFAULT_MODEL ? errBody(404) : errBody(503)));
+    await withServer(fastApp(f), async (base) => {
+      const h = await health(base);
+      assert.strictEqual(h.status, 200);
+      assert.strictEqual(h.body.status, 'degraded');
+      assert.strictEqual(h.body.gemini, 'error');
+      assert.strictEqual(h.body.primary.errorCode, 'HTTP_404');
+      assert.strictEqual(h.body.fallback.status, 'busy');
+      assert.strictEqual(h.body.fallback.errorCode, 'HTTP_503');
+      assert.strictEqual(h.body.fallbackOk, false);
     });
-
-    const req = createRequest({ fen: VALID_FEN, question: 'Help' });
-    const res = await sendRequest(app, req);
-
-    assert.strictEqual(res.statusCode, 502);
-    const body = JSON.parse(res.body);
-    assert.strictEqual(body.code, 'COACH_ERROR');
-    assert.strictEqual(gemini.models.generateContent.mock.calls.length, 1);
   });
 
-  it('Test 8: Health ok -> status healthy, gemini ok', async () => {
-    const gemini = mockGemini([{ text: 'OK' }]);
-
-    const app = createApp({
-      gemini,
-      now: () => Date.now(),
-      sleep: async () => Promise.resolve(),
-      random: () => 0,
-      env: mockEnv(),
+  it('14: health cache: 5 calls in 60 s -> 1 probe pair; after expiry -> new pair; concurrent share one', async () => {
+    let t = 1_000_000;
+    const f = mockFetch([okBody('OK')]);
+    const app = createApp({ fetch: f, now: () => t, sleep: async () => {}, random: () => 0, env: env() });
+    await withServer(app, async (base) => {
+      for (let i = 0; i < 5; i++) { await health(base); t += 10_000; }
+      assert.strictEqual(f.mock.calls.length, 2);
+      t += 30_000;
+      await health(base);
+      assert.strictEqual(f.mock.calls.length, 4);
+      t += 70_000;
+      await Promise.all([health(base), health(base), health(base)]);
+      assert.strictEqual(f.mock.calls.length, 6);
     });
-
-    const req = { method: 'GET', url: '/api/health', headers: {}, ip: '127.0.0.1' };
-    const res = await sendRequest(app, req);
-
-    assert.strictEqual(res.statusCode, 200);
-    const body = JSON.parse(res.body);
-    assert.strictEqual(body.status, 'healthy');
-    assert.strictEqual(body.gemini, 'ok');
-    assert.strictEqual(body.geminiConfigured, true);
   });
 
-  it('Test 9: Health probe 503 -> status degraded, gemini busy, HTTP 200, existing fields intact', async () => {
-    const gemini = mockGemini([make503('UNAVAILABLE')]);
-
-    const app = createApp({
-      gemini,
-      now: () => Date.now(),
-      sleep: async () => Promise.resolve(),
-      random: () => 0,
-      env: mockEnv(),
+  it('15: no key -> unconfigured, no probe; advice 503 without upstream call', async () => {
+    const f = mockFetch([okBody('OK')]);
+    await withServer(fastApp(f, { env: { OPENROUTER_API_KEY: '' } }), async (base) => {
+      const h = await health(base);
+      assert.strictEqual(h.body.geminiConfigured, false);
+      assert.strictEqual(h.body.gemini, 'unconfigured');
+      const r = await advice(base);
+      assert.strictEqual(r.status, 503);
+      assert.ok(r.body.error.length > 0);
     });
-
-    const req = { method: 'GET', url: '/api/health', headers: {}, ip: '127.0.0.1' };
-    const res = await sendRequest(app, req);
-
-    assert.strictEqual(res.statusCode, 200);
-    const body = JSON.parse(res.body);
-    assert.strictEqual(body.status, 'degraded');
-    assert.strictEqual(body.gemini, 'busy');
-    assert.strictEqual(body.geminiConfigured, true);
-    assert.strictEqual(body.model, 'gemini-3.6-flash');
-    assert.ok(body.aiTutorEnabled !== undefined);
-    assert.ok(body.dailyCap > 0);
-    assert.ok(body.monthlyCap > 0);
+    assert.strictEqual(f.mock.calls.length, 0);
   });
 
-  it('Test 10: Health cache: 5 calls in 60s -> 1 probe; after 60s -> new probe; concurrent calls share one probe', async () => {
-    let currentTime = 0;
-    const gemini = mockGemini([
-      { text: 'OK' },
-      { text: 'OK' },
-    ]);
-
-    const app = createApp({
-      gemini,
-      now: () => currentTime,
-      sleep: async () => Promise.resolve(),
-      random: () => 0,
-      env: mockEnv(),
+  it('16: kill switch -> 503 TUTOR_DISABLED with original text; missing install ID -> 400', async () => {
+    const f = mockFetch([okBody(ANSWER)]);
+    await withServer(fastApp(f, { env: { AI_TUTOR_ENABLED: 'false' } }), async (base) => {
+      const r = await advice(base);
+      assert.strictEqual(r.status, 503);
+      assert.strictEqual(r.body.code, 'TUTOR_DISABLED');
+      assert.match(r.body.error, /AI_TUTOR_ENABLED is not true/);
     });
-
-    for (let i = 0; i < 5; i++) {
-      const req = { method: 'GET', url: '/api/health', headers: {}, ip: '127.0.0.1' };
-      await sendRequest(app, req);
-      currentTime += 10000;
-    }
-    
-    assert.strictEqual(gemini.models.generateContent.mock.calls.length, 1, 'Should have 1 probe for 5 calls within 60s');
-
-    currentTime = 70000;
-    const req = { method: 'GET', url: '/api/health', headers: {}, ip: '127.0.0.1' };
-    await sendRequest(app, req);
-    
-    assert.strictEqual(gemini.models.generateContent.mock.calls.length, 2, 'Should have 2 probes after 60s expires');
-
-    currentTime = 75000;
-    const concurrentRequests = Promise.all([
-      sendRequest(app, { method: 'GET', url: '/api/health', headers: {}, ip: '127.0.0.1' }),
-      sendRequest(app, { method: 'GET', url: '/api/health', headers: {}, ip: '127.0.0.1' }),
-      sendRequest(app, { method: 'GET', url: '/api/health', headers: {}, ip: '127.0.0.1' }),
-    ]);
-    await concurrentRequests;
-
-    assert.strictEqual(gemini.models.generateContent.mock.calls.length, 2, 'Concurrent calls should share cached probe');
-  });
-
-  it('Test 11: No key -> gemini unconfigured, no probe', async () => {
-    const app = createApp({
-      gemini: null,
-      now: () => Date.now(),
-      sleep: async () => Promise.resolve(),
-      random: () => 0,
-      env: mockEnv({ GEMINI_API_KEY: '' }),
+    await withServer(fastApp(f), async (base) => {
+      const res = await fetch(`${base}/api/chess/advice`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fen: START_FEN, question: 'q' }) });
+      assert.strictEqual(res.status, 400);
     });
-
-    const req = { method: 'GET', url: '/api/health', headers: {}, ip: '127.0.0.1' };
-    const res = await sendRequest(app, req);
-
-    assert.strictEqual(res.statusCode, 200);
-    const body = JSON.parse(res.body);
-    assert.strictEqual(body.geminiConfigured, false);
-    assert.strictEqual(body.gemini, 'unconfigured');
-  });
-
-  it('Test 12: AI_TUTOR_ENABLED false -> 503 with original text and code TUTOR_DISABLED', async () => {
-    const gemini = mockGemini([]);
-
-    const app = createApp({
-      gemini,
-      now: () => Date.now(),
-      sleep: async () => Promise.resolve(),
-      random: () => 0,
-      env: mockEnv({ AI_TUTOR_ENABLED: 'false' }),
-    });
-
-    const req = createRequest({ fen: VALID_FEN, question: 'Help' });
-    const res = await sendRequest(app, req);
-
-    assert.strictEqual(res.statusCode, 503);
-    const body = JSON.parse(res.body);
-    assert.strictEqual(body.code, 'TUTOR_DISABLED');
-    assert.ok(body.error.includes('AI tutor is disabled'));
-    assert.strictEqual(gemini.models.generateContent.mock.calls.length, 0);
+    assert.strictEqual(f.mock.calls.length, 0);
   });
 });
